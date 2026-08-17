@@ -65,6 +65,12 @@
     return rules.verdicts[verdict] || rules.verdicts.allow;
   }
 
+  const lastFindings = new WeakMap();
+
+  function idleBody() {
+    return '<p class="xpc-empty">写好后点检查。只读这个发帖框，不读时间线。</p>';
+  }
+
   function render(panel, report, editor) {
     const box = qs(panel, '.xpc-body');
     const meta = verdictMeta(report.verdict);
@@ -73,6 +79,7 @@
     const cacheLine = ownPosts.length
       ? `已缓存 ${ownPosts.length} 条本机近 7 天发帖，用于查自己是否重复。`
       : '还没有本机发帖缓存。重复检查只覆盖你之后用这个浏览器发出的帖。';
+    lastFindings.set(panel, findings);
 
     box.innerHTML = `
       <div class="xpc-verdict xpc-${report.verdict}">${meta.label}</div>
@@ -85,23 +92,11 @@
           <em>${item.effect}</em>
         </li>`).join('')}</ul>` : '<p class="xpc-empty">按已公开规则，未见明显推荐/合规问题。</p>'}
       <p class="xpc-cache">${cacheLine}</p>
-      <div class="xpc-actions">
-        <button type="button" class="xpc-run">检查</button>
-        <button type="button" class="xpc-fix" ${canFix ? '' : 'disabled'}>帮忙改</button>
-        <span class="xpc-msg"></span>
-      </div>
     `;
-
-    qs(box, '.xpc-run').addEventListener('click', () => runCheck(editor, panel));
-    const msg = qs(box, '.xpc-msg');
-    qs(box, '.xpc-fix').addEventListener('click', () => {
-      const result = rewriteApi.rewrite(composeText(editor), findings);
-      msg.textContent = result.message;
-      if (result.ok) {
-        setEditorText(editor, result.text);
-        setTimeout(() => runCheck(editor, panel), 200);
-      }
-    });
+    const fixBtn = qs(panel, '.xpc-fix');
+    if (fixBtn) fixBtn.disabled = !canFix;
+    const msg = qs(panel, '.xpc-msg');
+    if (msg) msg.textContent = '';
   }
 
   function ensurePanel(editor) {
@@ -117,10 +112,27 @@
         <span>X Post Check</span>
         <span class="xpc-sub">For You 预检 · 非官方审核</span>
       </div>
-      <div class="xpc-body">
-        <p class="xpc-empty">开始写帖后会按 X 公开规则检查。只读这个发帖框，不读时间线。</p>
+      <div class="xpc-body">${idleBody()}</div>
+      <div class="xpc-actions">
+        <button type="button" class="xpc-run">检查</button>
+        <button type="button" class="xpc-fix" disabled>帮忙改</button>
+        <span class="xpc-msg"></span>
       </div>
     `;
+    panel.addEventListener('click', (event) => {
+      const editor = host.querySelector('[data-testid="tweetTextarea_0"]');
+      if (event.target.closest('.xpc-run')) {
+        runCheck(editor, panel);
+        return;
+      }
+      if (event.target.closest('.xpc-fix')) {
+        const findings = lastFindings.get(panel) || [];
+        const result = rewriteApi.rewrite(composeText(editor), findings);
+        const msg = qs(panel, '.xpc-msg');
+        if (msg) msg.textContent = result.message;
+        if (result.ok) setEditorText(editor, result.text);
+      }
+    });
     const toolbar = host.querySelector('[data-testid="toolBar"]');
     if (toolbar?.parentElement) toolbar.parentElement.insertBefore(panel, toolbar.nextSibling);
     else host.appendChild(panel);
@@ -130,7 +142,9 @@
   async function runCheck(editor, panel) {
     const text = composeText(editor);
     if (!text) {
-      qs(panel, '.xpc-body').innerHTML = '<p class="xpc-empty">开始写帖后会按 X 公开规则检查。只读这个发帖框，不读时间线。</p>';
+      qs(panel, '.xpc-body').innerHTML = idleBody();
+      const fixBtn = qs(panel, '.xpc-fix');
+      if (fixBtn) fixBtn.disabled = true;
       return;
     }
     ownPosts = await ownApi.loadOwnPosts();
@@ -143,19 +157,12 @@
   }
 
   function attach(editor) {
-    const panel = ensurePanel(editor);
-    if (!panel) return;
-    if (attached.has(editor)) return;
+    if (attached.has(editor)) {
+      ensurePanel(editor);
+      return;
+    }
     attached.add(editor);
-    let timer = 0;
-    const schedule = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => runCheck(editor, panel), 280);
-    };
-    editor.addEventListener('input', schedule);
-    editor.addEventListener('keyup', schedule);
-    editor.addEventListener('paste', schedule);
-    editor.addEventListener('focus', schedule);
+    ensurePanel(editor);
   }
 
   function scanComposers() {
